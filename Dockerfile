@@ -2,7 +2,7 @@
 
 # Imagem do init container. Roda como root por padrão porque o caso de uso
 # central é chown de volumes para o uid do container principal.
-FROM alpine:3.23 AS runtime
+FROM alpine:3.24 AS runtime
 
 # git para clonar, jq para ler a configuração, ca-certificates para HTTPS.
 # bash porque o script usa arrays e pipefail, que o busybox sh não tem.

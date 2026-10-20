@@ -243,8 +243,11 @@ make test-image        # suíte bats dentro da imagem, contra o busybox
 make image             # constrói a imagem
 ```
 
-Dependências de desenvolvimento: `bats`, `shellcheck`, `shfmt` (opcional),
-`jq`, `git`.
+Dependências de desenvolvimento: `bats`, `shellcheck`, `jq`, `git` e, opcional,
+`shfmt` — o CI usa a v3.14.1, e versões diferentes do formatador podem divergir
+no `fmt-check`.
+
+Não há toolchain Go envolvida: o `shfmt` do CI vem do binário da release.
 
 Os testes rodam contra repositórios bare locais via `file://`, sem rede.
 

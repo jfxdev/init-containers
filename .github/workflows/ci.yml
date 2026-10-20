@@ -13,19 +13,22 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # O shellcheck já vem na imagem do runner.
       - name: shellcheck
         run: make lint
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          cache: false
-
+      # Binário direto da release: o projeto não tem toolchain Go, e instalar
+      # uma só para obter o formatador seria a única dependência de Go aqui.
       - name: Instala o shfmt
-        run: go install mvdan.cc/sh/v3/cmd/shfmt@v3.10.0
+        env:
+          SHFMT_VERSION: v3.14.1
+        run: |
+          curl -fsSL -o shfmt \
+            "https://github.com/mvdan/sh/releases/download/$SHFMT_VERSION/shfmt_${SHFMT_VERSION}_linux_amd64"
+          sudo install -m 0755 shfmt /usr/local/bin/shfmt
+          shfmt --version
 
       - name: Verifica a formatação
         run: make fmt-check
@@ -34,7 +37,7 @@ jobs:
     name: Testes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Instala o bats
         run: |
@@ -51,14 +54,14 @@ jobs:
     name: Imagem
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # O estágio de teste roda a suíte bats dentro da imagem, confirmando que
       # o script funciona com os utilitários do busybox e não só com os do GNU.
       - name: Build e testes dentro da imagem
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: test
