@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+#
+# init-containers — prepara volumes antes do container principal subir:
+# clona repositórios git e ajusta permissões, lendo um arquivo JSON montado
+# como volume.
+#
+# Códigos de saída:
+#   0  tudo aplicado
+#   1  configuração ausente, ilegível ou inválida
+#   2  uma ou mais tarefas obrigatórias falharam
+
+set -Eeuo pipefail
+
+INITC_VERSION="${INITC_VERSION:-dev}"
+
+INITC_BIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+if [[ -z "${INITC_LIB_DIR:-}" ]]; then
+  INITC_LIB_DIR="$(cd -- "$INITC_BIN_DIR/../lib" && pwd -P)"
+fi
+export INITC_LIB_DIR
+
+# shellcheck source=log.sh
+source "$INITC_LIB_DIR/log.sh"
+# shellcheck source=run.sh
+source "$INITC_LIB_DIR/run.sh"
+# shellcheck source=config.sh
+source "$INITC_LIB_DIR/config.sh"
+# shellcheck source=perms.sh
+source "$INITC_LIB_DIR/perms.sh"
+# shellcheck source=clone.sh
+source "$INITC_LIB_DIR/clone.sh"
+
+usage() {
+  cat <<'USAGE'
+Uso: init-containers [opções]
+
+Opções:
+  -c, --config CAMINHO    arquivo de configuração JSON
+                          (padrão: $INITC_CONFIG ou /etc/init-containers/config.json)
+      --dry-run           imprime o plano efetivo sem alterar nada e sem
+                          contatar os repositórios remotos
+      --log-format FORMA  text (padrão) ou json
+      --log-level NÍVEL   debug, info (padrão), warn ou error
+  -V, --version           imprime a versão e sai
+  -h, --help              imprime esta ajuda e sai
+
+Códigos de saída: 0 sucesso, 1 configuração inválida, 2 tarefa obrigatória falhou.
+USAGE
+}
+
+main::parse_args() {
+  INITC_CONFIG="${INITC_CONFIG:-/etc/init-containers/config.json}"
+
+  while (($# > 0)); do
+    case "$1" in
+      -c | --config)
+        [[ $# -ge 2 ]] || log::fatal 1 "faltou o valor de $1"
+        INITC_CONFIG="$2"
+        shift 2
+        ;;
+      --config=*)
+        INITC_CONFIG="${1#*=}"
+        shift
+        ;;
+      --dry-run)
+        INITC_DRY_RUN=true
+        shift
+        ;;
+      --log-format)
+        [[ $# -ge 2 ]] || log::fatal 1 "faltou o valor de $1"
+        INITC_LOG_FORMAT="$2"
+        shift 2
+        ;;
+      --log-format=*)
+        INITC_LOG_FORMAT="${1#*=}"
+        shift
+        ;;
+      --log-level)
+        [[ $# -ge 2 ]] || log::fatal 1 "faltou o valor de $1"
+        INITC_LOG_LEVEL="$2"
+        shift 2
+        ;;
+      --log-level=*)
+        INITC_LOG_LEVEL="${1#*=}"
+        shift
+        ;;
+      -V | --version)
+        printf 'init-containers %s\n' "$INITC_VERSION"
+        exit 0
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *)
+        usage >&2
+        log::fatal 1 "opção desconhecida: $1"
+        ;;
+    esac
+  done
+
+  case "$INITC_LOG_FORMAT" in
+    text | json) ;;
+    *) log::fatal 1 "--log-format inválido: $INITC_LOG_FORMAT (use text ou json)" ;;
+  esac
+  case "$INITC_LOG_LEVEL" in
+    debug | info | warn | error) ;;
+    *) log::fatal 1 "--log-level inválido: $INITC_LOG_LEVEL (use debug, info, warn ou error)" ;;
+  esac
+}
+
+main::require_tools() {
+  local missing=() tool
+  for tool in jq git awk find; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+  done
+  ((${#missing[@]} == 0)) || log::fatal 1 "utilitários ausentes na imagem: ${missing[*]}"
+}
+
+# main::_clone_one <índice> <diretório de status>
+#
+# Roda num subshell: o status vai para arquivo, não por variável.
+main::_clone_one() {
+  local index="$1" status_dir="$2"
+
+  local repo_url="" repo_path="" repo_ref="" repo_depth=0 repo_submodules=false \
+    repo_auth="" repo_optional=false repo_force=false repo_owner="" repo_group="" repo_mode=""
+  eval "$(config::repo_vars "$index")"
+
+  local status=0
+  if clone::sync "$repo_url" "$repo_path" "$repo_ref" "$repo_depth" \
+    "$repo_submodules" "$repo_auth" "$repo_force"; then
+    if [[ "$INITC_DRY_RUN" != "true" ]]; then
+      # owner/group descem na árvore inteira para que o container principal
+      # possa escrever. O modo fica só no diretório de destino: aplicá-lo a
+      # cada arquivo mudaria o bit de execução e faria o git ver toda a árvore
+      # como modificada.
+      perms::chown "$repo_path" "$repo_owner" "$repo_group" true || status=1
+      perms::chmod "$repo_path" "$repo_mode" "" "" false || status=1
+    fi
+  else
+    status=1
+  fi
+
+  if ((status != 0)) && [[ "$repo_optional" == "true" ]]; then
+    log::warn "repositório opcional falhou, seguindo" url="$repo_url" path="$repo_path"
+    status=0
+  fi
+
+  printf '%s' "$status" >"$status_dir/$index"
+}
+
+main::clone_all() {
+  local count
+  count="$(config::count repositories)"
+  ((count == 0)) && return 0
+
+  local concurrency
+  concurrency="$(config::concurrency)"
+  ((concurrency > count)) && concurrency="$count"
+
+  local status_dir="$INITC_WORK_DIR/status"
+  mkdir -p "$status_dir"
+
+  log::info "clonando repositórios" total="$count" concurrency="$concurrency"
+
+  local index running
+  for ((index = 0; index < count; index++)); do
+    if ((concurrency > 1)); then
+      while true; do
+        running="$(jobs -rp | wc -l)"
+        ((running < concurrency)) && break
+        wait -n || true
+      done
+      main::_clone_one "$index" "$status_dir" &
+    else
+      main::_clone_one "$index" "$status_dir"
+    fi
+  done
+  wait
+
+  local failures=0 status
+  for ((index = 0; index < count; index++)); do
+    status="$(cat "$status_dir/$index" 2>/dev/null || printf '1')"
+    ((status != 0)) && failures=$((failures + 1))
+  done
+  return "$((failures > 0 ? 1 : 0))"
+}
+
+main::apply_permissions() {
+  local count
+  count="$(config::count permissions)"
+  ((count == 0)) && return 0
+
+  log::info "aplicando permissões" total="$count"
+
+  local failures=0 index
+  for ((index = 0; index < count; index++)); do
+    local perm_path="" perm_owner="" perm_group="" perm_mode="" \
+      perm_dir_mode="" perm_file_mode="" perm_recursive=false perm_optional=false
+    eval "$(config::perm_vars "$index")"
+
+    if ! perms::apply "$perm_path" "$perm_owner" "$perm_group" "$perm_mode" \
+      "$perm_dir_mode" "$perm_file_mode" "$perm_recursive"; then
+      if [[ "$perm_optional" == "true" ]]; then
+        log::warn "permissão opcional falhou, seguindo" path="$perm_path"
+      else
+        failures=$((failures + 1))
+      fi
+    fi
+  done
+  return "$((failures > 0 ? 1 : 0))"
+}
+
+main::cleanup() {
+  [[ -n "${INITC_WORK_DIR:-}" && -d "${INITC_WORK_DIR:-}" ]] && rm -rf "$INITC_WORK_DIR"
+  return 0
+}
+
+main() {
+  main::parse_args "$@"
+  main::require_tools
+
+  INITC_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/init-containers.XXXXXXXX")"
+  export INITC_WORK_DIR
+  trap main::cleanup EXIT
+
+  log::debug "iniciando" version="$INITC_VERSION" config="$INITC_CONFIG" dry_run="$INITC_DRY_RUN"
+
+  config::load "$INITC_CONFIG"
+  clone::init
+
+  if [[ "$INITC_DRY_RUN" == "true" ]]; then
+    log::info "configuração efetiva (dry-run)"
+    config::dump
+  fi
+
+  local repos perms
+  repos="$(config::count repositories)"
+  perms="$(config::count permissions)"
+  if ((repos == 0 && perms == 0)); then
+    log::warn "nada a fazer: repositories e permissions estão vazios" config="$INITC_CONFIG"
+    return 0
+  fi
+
+  local failed=0
+  main::clone_all || failed=1
+  # As permissões rodam depois dos clones para poderem cobrir as árvores
+  # recém-clonadas, e rodam mesmo se um clone falhou: um volume com dono certo
+  # e um repositório faltando é mais fácil de diagnosticar que os dois errados.
+  main::apply_permissions || failed=1
+
+  if ((failed != 0)); then
+    log::error "init container terminou com falhas"
+    return 2
+  fi
+
+  log::info "init container concluído" repositories="$repos" permissions="$perms"
+  return 0
+}
+
+main "$@"
