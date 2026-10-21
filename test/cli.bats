@@ -199,3 +199,87 @@ load helper/common
   run "$INITC_BIN" --config "$INITC_ROOT/examples/init-config.minimal.json" --dry-run
   [ "$status" -eq 0 ]
 }
+
+# --- Regressões apontadas na revisão do PR #1 ---
+
+# O helper de askpass é herdado por todo subprocesso do git, incluindo clones de
+# submódulos, cujas URLs vêm do .gitmodules do repositório clonado. Ele só pode
+# responder para o host do repositório configurado.
+@test "askpass responde ao host configurado" {
+  helper::load_libs
+  clone::init
+  CRED_USERNAME=x-access-token
+  CRED_TOKEN=ghp_segredo
+  CLONE_ORIGIN=https://github.com
+  local secret
+  secret="$(clone::_write_askpass_file)"
+
+  run env INITC_ASKPASS_FILE="$secret" INITC_ASKPASS_ORIGIN="$CLONE_ORIGIN" \
+    "$CLONE_ASKPASS" "Username for 'https://github.com': "
+  [ "$status" -eq 0 ]
+  [ "$output" = "x-access-token" ]
+}
+
+@test "askpass responde à senha mesmo com userinfo no prompt" {
+  # O git inclui o usuário no prompt de senha: comparar a string inteira da
+  # origem falharia justamente no prompt que entrega o token.
+  helper::load_libs
+  clone::init
+  CRED_USERNAME=x-access-token
+  CRED_TOKEN=ghp_segredo
+  CLONE_ORIGIN=https://github.com
+  local secret
+  secret="$(clone::_write_askpass_file)"
+
+  run env INITC_ASKPASS_FILE="$secret" INITC_ASKPASS_ORIGIN="$CLONE_ORIGIN" \
+    "$CLONE_ASKPASS" "Password for 'https://x-access-token@github.com': "
+  [ "$status" -eq 0 ]
+  [ "$output" = "ghp_segredo" ]
+}
+
+@test "askpass não entrega o token para outro host" {
+  helper::load_libs
+  clone::init
+  CRED_USERNAME=x-access-token
+  CRED_TOKEN=ghp_segredo
+  CLONE_ORIGIN=https://github.com
+  local secret
+  secret="$(clone::_write_askpass_file)"
+
+  local prompt
+  for prompt in \
+    "Username for 'https://atacante.example': " \
+    "Password for 'https://x-access-token@atacante.example': " \
+    "Username for 'http://github.com': " \
+    "Username for 'https://github.com.atacante.example': " \
+    "Password for 'https://github.com@atacante.example': "; do
+    run env INITC_ASKPASS_FILE="$secret" INITC_ASKPASS_ORIGIN="$CLONE_ORIGIN" \
+      "$CLONE_ASKPASS" "$prompt"
+    [ "$status" -ne 0 ]
+    helper::refute_contains "$output" "ghp_segredo"
+    helper::refute_contains "$output" "x-access-token"
+  done
+}
+
+@test "askpass falha fechado em prompt sem URL" {
+  helper::load_libs
+  clone::init
+  CRED_USERNAME=x-access-token
+  CRED_TOKEN=ghp_segredo
+  CLONE_ORIGIN=https://github.com
+  local secret
+  secret="$(clone::_write_askpass_file)"
+
+  run env INITC_ASKPASS_FILE="$secret" INITC_ASKPASS_ORIGIN="$CLONE_ORIGIN" \
+    "$CLONE_ASKPASS" "Password: "
+  [ "$status" -ne 0 ]
+  helper::refute_contains "$output" "ghp_segredo"
+}
+
+@test "a origem é derivada sem userinfo, path nem credenciais" {
+  helper::load_libs
+  [ "$(clone::_origin https://github.com/org/repo.git)" = "https://github.com" ]
+  [ "$(clone::_origin https://user@github.com/org/repo.git)" = "https://github.com" ]
+  [ "$(clone::_origin https://git.example.com:8443/org/repo.git)" = "https://git.example.com:8443" ]
+  [ "$(clone::_origin http://h/r)" = "http://h" ]
+}

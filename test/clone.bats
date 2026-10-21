@@ -230,3 +230,93 @@ cfg() {
   [ "$status" -eq 0 ]
   [ -f "$WS/app/vendor/lib/file.txt" ]
 }
+
+# --- Regressões apontadas na revisão do PR #1 ---
+
+@test "re-sync funciona depois do chown para owner diferente de root" {
+  # O git >= 2.35.2 recusa um repositório de outro dono com "detected dubious
+  # ownership". Na primeira execução o clone é feito como root e depois passa
+  # para o owner configurado, que é o cenário principal do README.
+  if ((EUID != 0)); then
+    skip "chown exige root"
+  fi
+  local config
+  config="$(helper::write_config "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"main\",\"owner\":4242,\"group\":4243}")")"
+
+  run "$INITC_BIN" --config "$config"
+  [ "$status" -eq 0 ]
+  [ "$(stat -c '%u:%g' "$WS/app")" = "4242:4243" ]
+
+  run "$INITC_BIN" --config "$config"
+  [ "$status" -eq 0 ]
+  helper::assert_contains "$output" "repositório já atualizado"
+  helper::refute_contains "$output" "dubious"
+  helper::refute_contains "$output" "outro remoto"
+}
+
+@test "trocar o ref para outro branch continua funcionando" {
+  # Um clone com --branch/--single-branch grava um refspec que cobre só aquele
+  # branch; sem refspec explícito no fetch, o novo ref nunca chegaria.
+  local src
+  src="$(helper::repo_src app)"
+  git -C "$src" checkout -q -b develop
+  printf 'do develop\n' >"$src/file.txt"
+  git -C "$src" commit -qam "develop"
+  git -C "$src" push -q "$BATS_TEST_TMPDIR/bare-app.git" develop
+  git -C "$src" checkout -q main
+
+  helper::run_initc "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"main\"}")"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$WS/app/file.txt")" = "dois" ]
+
+  helper::run_initc "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"develop\"}")"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$WS/app/file.txt")" = "do develop" ]
+  [ "$(git -C "$WS/app" rev-parse --abbrev-ref HEAD)" = "develop" ]
+}
+
+@test "trocar de branch para tag continua funcionando" {
+  helper::run_initc "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"main\",\"depth\":1}")"
+  [ "$status" -eq 0 ]
+  helper::run_initc "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"v1.0.0\"}")"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$WS/app/file.txt")" = "um" ]
+}
+
+@test "trocar de clone raso para um SHA recupera o histórico" {
+  local sha
+  sha="$(helper::sha app HEAD~1)"
+  helper::run_initc "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"main\",\"depth\":1}")"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$WS/app" rev-parse --is-shallow-repository)" = "true" ]
+
+  helper::run_initc "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"$sha\"}")"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$WS/app" rev-parse HEAD)" = "$sha" ]
+}
+
+@test "depth voltando a 0 recupera o histórico completo" {
+  helper::run_initc "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"main\",\"depth\":1}")"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$WS/app" rev-list --count HEAD)" = "1" ]
+
+  helper::run_initc "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"main\"}")"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$WS/app" rev-list --count HEAD)" = "2" ]
+  [ "$(git -C "$WS/app" rev-parse --is-shallow-repository)" = "false" ]
+}
+
+@test "com --log-level debug o commit logado é um hash, não log capturado" {
+  local config
+  config="$(helper::write_config "$(cfg "{\"url\":\"$REPO\",\"path\":\"$WS/app\",\"ref\":\"main\"}")")"
+  run "$INITC_BIN" --config "$config"
+  [ "$status" -eq 0 ]
+
+  run "$INITC_BIN" --config "$config" --log-level debug
+  [ "$status" -eq 0 ]
+  helper::assert_contains "$output" "repositório já atualizado"
+  # O commit precisa ser os 12 primeiros dígitos hex do HEAD.
+  local head
+  head="$(git -C "$WS/app" rev-parse HEAD)"
+  helper::assert_contains "$output" "commit=${head:0:12}"
+}

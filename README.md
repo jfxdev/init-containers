@@ -137,6 +137,14 @@ O token é entregue ao git por um helper de `GIT_ASKPASS`, lido de um arquivo
 (visível em `ps`), não é embutido na URL (que vazaria em `.git/config` e nos
 logs do servidor remoto) e é redigido das mensagens de erro.
 
+O helper **só responde para o host do repositório configurado**. `GIT_ASKPASS` é
+herdado por todo subprocesso do git, incluindo os clones de submódulos, cujas
+URLs vêm do `.gitmodules` do repositório clonado: sem essa checagem, um
+`.gitmodules` apontando para um host hostil que responda 401 receberia o token.
+A consequência prática é que **um submódulo privado em outro host falha** — um
+submódulo público em outro host continua funcionando, porque não há desafio de
+autenticação.
+
 ### `repositories[]`
 
 | Campo        | Tipo          | Padrão | Descrição |
@@ -196,6 +204,7 @@ anterior é esperado e não pode virar erro. Para cada repositório:
 | Ausente                            | Clona num diretório temporário irmão e move para o destino — nunca um clone meio feito no lugar final. |
 | Diretório vazio                    | Clona normalmente (cobre um `subPath` montado). |
 | Repositório do mesmo remoto        | `fetch`, reset no ref e `clean`: descarta edições locais e arquivos não rastreados. |
+| Repositório com outro `ref` ou `depth` | O `fetch` usa refspec explícito por tipo de ref, então mudar `main` para `develop`, ou trocar branch por tag, funciona sem recriar o volume. Baixar `depth` para 0 recupera o histórico completo. |
 | Repositório de outro remoto        | Erro, a menos que `force: true`. |
 | Ocupado por dados que não são git  | Erro, a menos que `force: true`. |
 
@@ -203,6 +212,11 @@ anterior é esperado e não pode virar erro. Para cada repositório:
 
 Quando `ref` é um branch, o HEAD fica no branch em vez de detached, para que o
 volume se pareça com um checkout normal.
+
+Todas as invocações do git passam `safe.directory`, porque o repositório passa a
+pertencer ao `owner` configurado enquanto o init container roda como root: sem
+isso, o git recusaria o acesso no restart do Pod com *detected dubious
+ownership*.
 
 ## Códigos de saída
 
@@ -232,6 +246,9 @@ viram aviso, não erro — a ideia é conferir o plano, não o estado do volume.
 
 `--log-format json` emite uma linha JSON por evento, com `ts`, `level`, `msg` e
 os campos estruturados.
+
+Todo log vai para **stderr**; o stdout fica reservado para dados, como o JSON do
+`--dry-run`. Isso permite `init-containers --dry-run | jq ...` sem filtrar nada.
 
 ## Desenvolvimento
 

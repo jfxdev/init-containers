@@ -66,8 +66,11 @@ log::_emit() {
   fi
 }
 
-log::debug() { log::_emit debug "$@"; }
-log::info() { log::_emit info "$@"; }
+# Todo log vai para stderr: stdout fica reservado para dados, como o JSON do
+# --dry-run. Com log em stdout, qualquer "$(funcao)" que também logasse passava a
+# capturar as linhas de log junto com o valor.
+log::debug() { log::_emit debug "$@" >&2; }
+log::info() { log::_emit info "$@" >&2; }
 log::warn() { log::_emit warn "$@" >&2; }
 log::error() { log::_emit error "$@" >&2; }
 
