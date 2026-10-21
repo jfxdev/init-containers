@@ -2,10 +2,23 @@ name: Release
 
 on:
   push:
-    # Mais restrito que 'v*': uma tag como "vnext" não produziria versão pelas
-    # regras type=semver, mas habilitaria latest, e o push substituiria a imagem
-    # estável por uma publicação sem versão.
-    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+    # Releases por data: AAAA-MM-DD, com sufixo sequencial opcional para mais de
+    # uma no mesmo dia (2026-10-20.1). Mais restrito que '*' porque este push
+    # move a tag latest: uma tag qualquer substituiria a imagem estável.
+    #
+    # Este caminho cobre a tag publicada à mão. O merge em main passa pelo
+    # workflow_call abaixo.
+    tags: ['20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]*']
+
+  # Uma tag publicada com o GITHUB_TOKEN não dispara outro workflow, então o
+  # tag.yml não pode contar com o evento de push acima: ele chama este workflow
+  # direto, e as duas rotas publicam pelo mesmo caminho.
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag a publicar
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,10 +28,65 @@ jobs:
   image:
     name: Publica a imagem
     runs-on: ubuntu-latest
+    # As duas rotas publicam `latest`. Sem isto, uma tag publicada à mão e um
+    # merge podem construir em paralelo, e o build que terminar por último fica
+    # com o `latest` — não necessariamente o da release mais nova.
+    #
+    # O grupo é só deste job e tem nome diferente do grupo do tag.yml: um grupo
+    # compartilhado entre o workflow chamador e o chamado faria um esperar pelo
+    # outro.
+    concurrency:
+      group: publish-image
+      cancel-in-progress: false
+      queue: max
+    env:
+      # Pelo evento de push a tag é a própria ref; pelo workflow_call vem de
+      # quem chamou, porque ali a ref é a de main.
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      # Antes do checkout: uma tag fora do formato não chega nem a construir
+      # imagem. O filtro de tags do push é glob, não regex, e ainda aceita
+      # formas como "2026-99-99-rascunho".
+      - name: Confere que a tag é uma data válida
+        env:
+          REF_NAME: ${{ env.TAG }}
+        run: |
+          if ! printf '%s' "$REF_NAME" \
+            | grep -qE '^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])(\.[0-9]+)?$'; then
+            echo "::error::tag '$REF_NAME' não é uma release por data (AAAA-MM-DD[.N]); release abortado"
+            exit 1
+          fi
+
+          # O regex acima aceita 2026-02-30: os dias válidos dependem do mês.
+          DATE="${REF_NAME%%.*}"
+          if [ "$(date -u -d "$DATE" +%Y-%m-%d 2>/dev/null)" != "$DATE" ]; then
+            echo "::error::tag '$REF_NAME' não é uma data do calendário; release abortado"
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # A imagem sai do commit que a tag aponta, não do topo de main: pelo
+          # workflow_call o repositório pode já ter andado.
+          ref: ${{ env.TAG }}
+          # Traz as tags, que o passo seguinte compara.
+          fetch-depth: 0
           persist-credentials: false
+
+      # A serialização impede dois builds ao mesmo tempo, mas não impede
+      # republicar uma tag antiga — um re-run de release velha, por exemplo.
+      # Sem esta checagem, o `latest` andaria para trás.
+      - name: Decide se esta release move o latest
+        id: latest
+        run: |
+          newest="$(git tag --list \
+            | grep -E '^20[0-9]{2}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?$' \
+            | sort -V | tail -1)"
+          if [ "$newest" = "$TAG" ]; then
+            echo "move=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::$TAG não é a release mais recente ($newest); latest fica onde está"
+          fi
 
       # Confirma que a imagem passa nos próprios testes antes de publicar.
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -30,19 +98,6 @@ jobs:
           context: .
           target: test
           push: false
-
-      # Segunda barreira: o filtro de tags acima é glob, não regex, então ainda
-      # aceita formas como "v1.2.3.4". Aqui a tag é conferida de verdade antes de
-      # qualquer publicação.
-      - name: Confere que a tag é SemVer
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if ! printf '%s' "$REF_NAME" \
-            | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
-            echo "::error::tag '$REF_NAME' não é SemVer (vX.Y.Z[-pre][+build]); release abortado"
-            exit 1
-          fi
 
       - name: Login no GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -56,11 +111,15 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
+          # Sem tags móveis por major/minor: numa release por data não existe
+          # linha de compatibilidade para elas acompanharem. Fica a tag datada,
+          # imutável, e latest.
+          #
+          # type=ref,event=tag não serve às duas rotas: pelo workflow_call o
+          # evento é um push em main, e a ref seria "main".
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=${{ env.TAG }}
+            type=raw,value=latest,enable=${{ steps.latest.outputs.move == 'true' }}
 
       - name: Build e push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -72,4 +131,4 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ env.TAG }}

@@ -2,7 +2,7 @@
 
 IMAGE ?= ghcr.io/jfxdev/init-containers
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-SHELL_FILES := bin/init-containers lib/log.sh lib/run.sh lib/config.sh lib/perms.sh lib/clone.sh test/helper/common.bash
+SHELL_FILES := bin/init-containers lib/log.sh lib/run.sh lib/config.sh lib/perms.sh lib/clone.sh test/helper/common.bash tools/release-tag.sh
 
 .DEFAULT_GOAL := help
 
@@ -49,6 +49,14 @@ image: ## Constrói a imagem do init container
 
 .PHONY: check
 check: lint fmt-check test validate-examples ## Roda tudo que não exige docker
+
+.PHONY: tag
+tag: ## Cria a tag de release do dia (sufixo .N automático se já existir)
+	@tools/release-tag.sh
+
+.PHONY: next-tag
+next-tag: ## Mostra a tag que o próximo release do dia usaria, sem criar nada
+	@tools/release-tag.sh --print
 
 .PHONY: clean
 clean: ## Remove artefatos locais

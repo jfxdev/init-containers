@@ -1,0 +1,46 @@
+# Init container em Docker Compose: um serviço que roda até terminar e um
+# depends_on com service_completed_successfully, que segura o app até o volume
+# estar pronto. Exige Compose v2.
+#
+# O serviço `app` abaixo é um lugar reservado: troque `exemplo/app:latest` pela
+# sua imagem antes de subir, senão o compose falha ao tentar baixá-la.
+#
+# Da raiz do repositório (-f, porque o padrão é o compose.yml do diretório
+# atual; os caminhos relativos daqui continuam resolvendo contra examples/):
+#
+#   GITHUB_TOKEN=ghp_...  docker compose -f examples/docker-compose.yml up
+#
+# Para conferir o plano antes de mexer no volume:
+#
+#   docker compose -f examples/docker-compose.yml run --rm init --dry-run
+
+services:
+  init:
+    image: ghcr.io/jfxdev/init-containers:2026-10-20
+    # chown exige uid 0; o app segue non-root.
+    user: "0:0"
+    # O serviço termina de propósito. Uma política de restart herdada do resto
+    # do arquivo o relançaria em loop.
+    restart: "no"
+    environment:
+      # O token vem do ambiente ou do .env, nunca do JSON montado.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - ./init-config.json:/etc/init-containers/config.json:ro
+      - workspace:/workspace
+
+  app:
+    # Lugar reservado: troque pela sua imagem.
+    image: exemplo/app:latest
+    user: "1000:1000"
+    depends_on:
+      init:
+        # O app só sobe quando o init sai com 0.
+        condition: service_completed_successfully
+    volumes:
+      - workspace:/workspace
+
+volumes:
+  # Volume nomeado: o chown fica dentro dele. Num bind mount de diretório do
+  # host, o mesmo chown mudaria o dono dos arquivos do host.
+  workspace:

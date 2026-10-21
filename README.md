@@ -56,7 +56,7 @@ metadata:
 spec:
   initContainers:
     - name: init
-      image: ghcr.io/jfxdev/init-containers:latest
+      image: ghcr.io/jfxdev/init-containers:2026-10-20
       # chown exige uid 0; o container principal segue non-root.
       securityContext:
         runAsUser: 0
@@ -83,7 +83,68 @@ spec:
       emptyDir: {}
 ```
 
-Para rodar fora do cluster:
+## Uso em Docker Compose
+
+Compose não tem init containers, mas tem a peça que importa: um serviço que
+roda até terminar e um `depends_on` com `service_completed_successfully`, que
+só libera o app quando o init sai com `0`. `examples/docker-compose.yml` traz o
+arquivo completo; o essencial é:
+
+```yaml
+services:
+  init:
+    image: ghcr.io/jfxdev/init-containers:2026-10-20
+    user: "0:0"     # chown exige uid 0; o app segue non-root
+    restart: "no"   # o serviço termina de propósito
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - ./init-config.json:/etc/init-containers/config.json:ro
+      - workspace:/workspace
+
+  app:
+    image: exemplo/app:latest
+    user: "1000:1000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - workspace:/workspace
+
+volumes:
+  workspace:
+```
+
+O que muda em relação ao Kubernetes:
+
+| | Kubernetes | Compose |
+| ------------- | ---------- | ------- |
+| Ordem | `initContainers` roda antes dos containers | `depends_on` com `condition: service_completed_successfully` |
+| Configuração | ConfigMap montado | bind mount do JSON, `:ro` |
+| Credenciais | Secret em `env` ou arquivo montado | `environment` e `.env`, ou arquivo montado com `tokenFile` |
+| Volume | `emptyDir` ou PVC | volume nomeado ou bind mount |
+| Init falhou | o Pod reinicia o init até passar | `docker compose up` aborta e o app não sobe |
+
+Pontos de atenção:
+
+- `condition: service_completed_successfully` exige **Compose v2** (`docker
+  compose`, não `docker-compose`). O `docker stack deploy` ignora `depends_on`
+  por completo: em Swarm, não há ordenação para o init container se apoiar.
+- `restart: "no"` no serviço do init. Uma política como `unless-stopped`,
+  herdada do resto do arquivo, o relançaria em loop a cada término.
+- Cada `docker compose up` roda o init de novo, como um restart de Pod. A
+  [idempotência](#idempotência) vale igual aqui: o segundo `up` faz `fetch` e
+  reset nos repositórios já clonados, em vez de falhar.
+- Num **volume nomeado**, o `chown` fica dentro do volume. Num **bind mount de
+  diretório do host**, ele muda o dono dos arquivos do host de verdade — nesse
+  caso confira `owner`/`group` com `--dry-run` antes.
+- `docker compose run --rm init --dry-run` imprime o plano sem tocar no volume;
+  as flags vão depois do nome do serviço, porque a imagem tem `ENTRYPOINT` e
+  não `CMD`.
+
+## Uso direto
+
+Fora de orquestrador, é um script com um arquivo de configuração:
 
 ```bash
 init-containers --config ./config.json           # aplica
@@ -250,6 +311,88 @@ os campos estruturados.
 Todo log vai para **stderr**; o stdout fica reservado para dados, como o JSON do
 `--dry-run`. Isso permite `init-containers --dry-run | jq ...` sem filtrar nada.
 
+## Versionamento e releases
+
+As releases são **por data**, no formato `AAAA-MM-DD`: a tag `2026-10-20`
+publica `ghcr.io/jfxdev/init-containers:2026-10-20`. Não há SemVer aqui porque
+o contrato público não é a imagem e sim o formato da configuração, versionado à
+parte em `apiVersion` (`init-containers/v1`) e alterado só quando muda de forma
+incompatível.
+
+Mais de uma release no mesmo dia leva um sufixo sequencial — `2026-10-20.1`,
+`2026-10-20.2`. A primeira do dia vai sem sufixo, e o sufixo nunca é escolhido
+à mão: as tags que já existem são consultadas local e no remoto, porque uma tag
+criada e ainda não publicada também ocupa o nome.
+
+O próximo sufixo vem do maior em uso, não da contagem: se a `.1` for apagada,
+depois da `.2` vem a `.3`. Uma tag já publicada nunca é reaproveitada para
+outro commit — quem já baixou aquela imagem continua com a dela.
+
+A data vem do **UTC**, para não depender do fuso de quem publica.
+
+| Tag           | Aponta para |
+| ------------- | ----------- |
+| `2026-10-20`  | aquela release, imutável. |
+| `latest`      | a release mais recente. |
+
+Em init container, prefira a tag datada: `latest` muda sem aviso, e um Pod que
+reinicia semana que vem subiria outra imagem sem nenhuma mudança da sua parte.
+Fixar o digest é mais forte ainda.
+
+A versão embutida na imagem é a própria tag, visível em `init-containers
+--version` e no campo `version` do log em nível `debug`.
+
+### Quando a release sai
+
+**Todo merge em `main` vira uma release.** O workflow `Tag de release` cria a
+tag do dia e chama o `Release`, que constrói e publica a imagem. No caminho
+comum não há passo manual nenhum.
+
+Um re-run do workflow sobre um commit que já tem tag de release não cria outra:
+a tag é do commit, não da execução.
+
+Uma tag publicada com o `GITHUB_TOKEN` não dispara outro workflow, então o
+`Tag de release` **chama** o `Release` em vez de esperar o evento de push da
+tag. As duas rotas — merge em `main` e tag publicada à mão — terminam no mesmo
+job de publicação.
+
+A tagueação é serializada (`concurrency`), senão dois merges seguidos
+calculariam o mesmo sufixo e o segundo push falharia. A fila usa `queue: max`
+porque o padrão do GitHub guarda uma execução pendente só: com três merges em
+sequência, a do meio seria cancelada e aquele merge ficaria sem release.
+
+A publicação também é serializada, num grupo separado, porque uma tag publicada
+à mão e um merge podem coincidir — e dois builds em paralelo deixariam o
+`latest` com o que terminasse por último, não com a release mais nova. Pela
+mesma razão, `latest` só anda para frente: republicar uma tag antiga atualiza a
+tag datada dela e deixa o `latest` onde está.
+
+O `Release` roda a suíte bats dentro da imagem antes de publicar, então um
+commit quebrado não vira imagem publicada. A tag, porém, é criada antes: num
+build que falha ela fica apontando para um commit sem imagem, e o próximo merge
+segue a sequência normalmente.
+
+### Publicando à mão
+
+Para um commit que não veio de merge, ou uma release fora do fluxo:
+
+```bash
+make next-tag             # mostra qual seria a tag de hoje, sem criar nada
+tag="$(make tag)"         # cria a tag anotada do dia e devolve o nome dela
+git push origin "$tag"
+```
+
+`make tag` imprime no stdout só a tag que criou, então dá para encadear sem
+adivinhar o sufixo — a primeira release do dia é `2026-10-20`, a segunda
+`2026-10-20.1`.
+
+Ele cria a tag e para por aí: o push é o que dispara a release, e essa continua
+sendo uma decisão explícita. É o mesmo script que o CI usa, então o nome e o
+sufixo saem iguais dos dois lados.
+
+O `Release` recusa tags fora do formato e datas que não existem no calendário
+(`2026-02-30`), e publica `linux/amd64` e `linux/arm64`.
+
 ## Desenvolvimento
 
 ```bash
@@ -280,6 +423,7 @@ lib/clone.sh          clone, re-sync e credenciais
 lib/perms.sh          chown e chmod
 lib/log.sh            logging em texto ou JSON
 lib/run.sh            execução de comandos, com suporte a dry-run
+tools/release-tag.sh  cria a tag de release do dia (fora da imagem)
 ```
 
 A configuração é validada e depois normalizada para uma forma em que todo campo
