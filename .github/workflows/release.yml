@@ -2,10 +2,10 @@ name: Release
 
 on:
   push:
-    # Mais restrito que 'v*': uma tag como "vnext" não produziria versão pelas
-    # regras type=semver, mas habilitaria latest, e o push substituiria a imagem
-    # estável por uma publicação sem versão.
-    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+    # Releases por data: AAAA-MM-DD, com sufixo sequencial opcional para mais de
+    # uma no mesmo dia (2026-10-20.1). Mais restrito que '*' porque este push
+    # move a tag latest: uma tag qualquer substituiria a imagem estável.
+    tags: ['20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]*']
 
 permissions:
   contents: read
@@ -32,15 +32,22 @@ jobs:
           push: false
 
       # Segunda barreira: o filtro de tags acima é glob, não regex, então ainda
-      # aceita formas como "v1.2.3.4". Aqui a tag é conferida de verdade antes de
-      # qualquer publicação.
-      - name: Confere que a tag é SemVer
+      # aceita formas como "2026-99-99-rascunho". Aqui a tag é conferida de
+      # verdade antes de qualquer publicação.
+      - name: Confere que a tag é uma data válida
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
           if ! printf '%s' "$REF_NAME" \
-            | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
-            echo "::error::tag '$REF_NAME' não é SemVer (vX.Y.Z[-pre][+build]); release abortado"
+            | grep -qE '^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])(\.[0-9]+)?$'; then
+            echo "::error::tag '$REF_NAME' não é uma release por data (AAAA-MM-DD[.N]); release abortado"
+            exit 1
+          fi
+
+          # O regex acima aceita 2026-02-30: os dias válidos dependem do mês.
+          DATE="${REF_NAME%%.*}"
+          if [ "$(date -u -d "$DATE" +%Y-%m-%d 2>/dev/null)" != "$DATE" ]; then
+            echo "::error::tag '$REF_NAME' não é uma data do calendário; release abortado"
             exit 1
           fi
 
@@ -56,11 +63,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
+          # Sem tags móveis por major/minor: numa release por data não existe
+          # linha de compatibilidade para elas acompanharem. Fica a tag datada,
+          # imutável, e latest.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=ref,event=tag
+            type=raw,value=latest
 
       - name: Build e push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

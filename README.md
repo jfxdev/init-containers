@@ -56,7 +56,7 @@ metadata:
 spec:
   initContainers:
     - name: init
-      image: ghcr.io/jfxdev/init-containers:latest
+      image: ghcr.io/jfxdev/init-containers:2026-10-20
       # chown exige uid 0; o container principal segue non-root.
       securityContext:
         runAsUser: 0
@@ -83,7 +83,68 @@ spec:
       emptyDir: {}
 ```
 
-Para rodar fora do cluster:
+## Uso em Docker Compose
+
+Compose não tem init containers, mas tem a peça que importa: um serviço que
+roda até terminar e um `depends_on` com `service_completed_successfully`, que
+só libera o app quando o init sai com `0`. `examples/docker-compose.yml` traz o
+arquivo completo; o essencial é:
+
+```yaml
+services:
+  init:
+    image: ghcr.io/jfxdev/init-containers:2026-10-20
+    user: "0:0"     # chown exige uid 0; o app segue non-root
+    restart: "no"   # o serviço termina de propósito
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - ./init-config.json:/etc/init-containers/config.json:ro
+      - workspace:/workspace
+
+  app:
+    image: exemplo/app:latest
+    user: "1000:1000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - workspace:/workspace
+
+volumes:
+  workspace:
+```
+
+O que muda em relação ao Kubernetes:
+
+| | Kubernetes | Compose |
+| ------------- | ---------- | ------- |
+| Ordem | `initContainers` roda antes dos containers | `depends_on` com `condition: service_completed_successfully` |
+| Configuração | ConfigMap montado | bind mount do JSON, `:ro` |
+| Credenciais | Secret em `env` ou arquivo montado | `environment` e `.env`, ou arquivo montado com `tokenFile` |
+| Volume | `emptyDir` ou PVC | volume nomeado ou bind mount |
+| Init falhou | o Pod reinicia o init até passar | `docker compose up` aborta e o app não sobe |
+
+Pontos de atenção:
+
+- `condition: service_completed_successfully` exige **Compose v2** (`docker
+  compose`, não `docker-compose`). O `docker stack deploy` ignora `depends_on`
+  por completo: em Swarm, não há ordenação para o init container se apoiar.
+- `restart: "no"` no serviço do init. Uma política como `unless-stopped`,
+  herdada do resto do arquivo, o relançaria em loop a cada término.
+- Cada `docker compose up` roda o init de novo, como um restart de Pod. A
+  [idempotência](#idempotência) vale igual aqui: o segundo `up` faz `fetch` e
+  reset nos repositórios já clonados, em vez de falhar.
+- Num **volume nomeado**, o `chown` fica dentro do volume. Num **bind mount de
+  diretório do host**, ele muda o dono dos arquivos do host de verdade — nesse
+  caso confira `owner`/`group` com `--dry-run` antes.
+- `docker compose run --rm init --dry-run` imprime o plano sem tocar no volume;
+  as flags vão depois do nome do serviço, porque a imagem tem `ENTRYPOINT` e
+  não `CMD`.
+
+## Uso direto
+
+Fora de orquestrador, é um script com um arquivo de configuração:
 
 ```bash
 init-containers --config ./config.json           # aplica
@@ -249,6 +310,40 @@ os campos estruturados.
 
 Todo log vai para **stderr**; o stdout fica reservado para dados, como o JSON do
 `--dry-run`. Isso permite `init-containers --dry-run | jq ...` sem filtrar nada.
+
+## Versionamento e releases
+
+As releases são **por data**, no formato `AAAA-MM-DD`: a tag `2026-10-20`
+publica `ghcr.io/jfxdev/init-containers:2026-10-20`. Não há SemVer aqui porque
+o contrato público não é a imagem e sim o formato da configuração, versionado à
+parte em `apiVersion` (`init-containers/v1`) e alterado só quando muda de forma
+incompatível.
+
+Mais de uma release no mesmo dia leva um sufixo sequencial — `2026-10-20.1`,
+`2026-10-20.2`. A primeira do dia vai sem sufixo.
+
+| Tag           | Aponta para |
+| ------------- | ----------- |
+| `2026-10-20`  | aquela release, imutável. |
+| `latest`      | a release mais recente. |
+
+Em init container, prefira a tag datada: `latest` muda sem aviso, e um Pod que
+reinicia semana que vem subiria outra imagem sem nenhuma mudança da sua parte.
+Fixar o digest é mais forte ainda.
+
+A versão embutida na imagem é a própria tag, visível em `init-containers
+--version` e no campo `version` do log em nível `debug`.
+
+Para publicar:
+
+```bash
+git tag 2026-10-20
+git push origin 2026-10-20
+```
+
+O workflow `Release` recusa tags fora do formato e datas que não existem no
+calendário (`2026-02-30`), roda a suíte bats dentro da imagem e só então publica
+`linux/amd64` e `linux/arm64`.
 
 ## Desenvolvimento
 
