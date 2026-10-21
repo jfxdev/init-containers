@@ -1,0 +1,68 @@
+{
+  "apiVersion": "init-containers/v1",
+
+  "defaults": {
+    "owner": 1000,
+    "group": 1000,
+    "mode": "0755",
+    "auth": "github",
+    "concurrency": 4
+  },
+
+  "auth": {
+    "github": {
+      "type": "https",
+      "username": "x-access-token",
+      "tokenEnv": "GITHUB_TOKEN"
+    },
+    "gitlab": {
+      "type": "https",
+      "username": "oauth2",
+      "tokenFile": "/etc/init-containers/secrets/gitlab-token"
+    }
+  },
+
+  "repositories": [
+    {
+      "url": "https://github.com/exemplo/app.git",
+      "path": "/workspace/app",
+      "ref": "main",
+      "depth": 1
+    },
+    {
+      "url": "https://gitlab.com/exemplo/infra.git",
+      "path": "/workspace/infra",
+      "ref": "v2.3.1",
+      "auth": "gitlab",
+      "owner": 1001,
+      "mode": "0750"
+    },
+    {
+      "url": "https://github.com/exemplo/publico.git",
+      "path": "/workspace/publico",
+      "auth": "none",
+      "optional": true
+    }
+  ],
+
+  "permissions": [
+    {
+      "path": "/workspace/cache",
+      "owner": 1000,
+      "group": 1000,
+      "mode": "0775",
+      "recursive": true
+    },
+    {
+      "path": "/workspace/app",
+      "dirMode": "0755",
+      "fileMode": "0644",
+      "recursive": true
+    },
+    {
+      "path": "/workspace/opcional",
+      "mode": "0770",
+      "optional": true
+    }
+  ]
+}

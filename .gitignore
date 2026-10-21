@@ -1,0 +1,3 @@
+# Saídas de build e artefatos locais
+/dist/
+*.tmp

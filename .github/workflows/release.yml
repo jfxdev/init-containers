@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    # Mais restrito que 'v*': uma tag como "vnext" não produziria versão pelas
+    # regras type=semver, mas habilitaria latest, e o push substituiria a imagem
+    # estável por uma publicação sem versão.
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    name: Publica a imagem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Confirma que a imagem passa nos próprios testes antes de publicar.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Testes dentro da imagem
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: test
+          push: false
+
+      # Segunda barreira: o filtro de tags acima é glob, não regex, então ainda
+      # aceita formas como "v1.2.3.4". Aqui a tag é conferida de verdade antes de
+      # qualquer publicação.
+      - name: Confere que a tag é SemVer
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s' "$REF_NAME" \
+            | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$REF_NAME' não é SemVer (vX.Y.Z[-pre][+build]); release abortado"
+            exit 1
+          fi
+
+      - name: Login no GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadados da imagem
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build e push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}

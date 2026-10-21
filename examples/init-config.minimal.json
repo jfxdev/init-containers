@@ -1,0 +1,9 @@
+{
+  "apiVersion": "init-containers/v1",
+  "repositories": [
+    { "url": "https://github.com/exemplo/app.git", "path": "/workspace/app" }
+  ],
+  "permissions": [
+    { "path": "/workspace/app", "owner": 1000, "group": 1000, "recursive": true }
+  ]
+}
