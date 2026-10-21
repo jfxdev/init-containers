@@ -1,0 +1,73 @@
+name: Tag de release
+
+# Todo merge em main vira uma release datada. A tag é criada pelo mesmo script
+# que o `make tag` local, então o nome e o sufixo saem iguais nos dois lados.
+on:
+  push:
+    branches: [main]
+
+# Uma tagueação por vez: dois merges em sequência calculariam o mesmo sufixo, e
+# o segundo push falharia com a tag já existente.
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Cria a tag do dia
+    runs-on: ubuntu-latest
+    permissions:
+      # Publicar a tag é o produto deste job.
+      contents: write
+    outputs:
+      tag: ${{ steps.create.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Histórico e tags completos: o script escolhe o sufixo a partir das
+          # tags que já existem.
+          fetch-depth: 0
+          # Ao contrário dos outros workflows, aqui a credencial fica: o push da
+          # tag precisa dela.
+          persist-credentials: true
+
+      # Um re-run do workflow cairia aqui com o commit já publicado, e sem esta
+      # checagem criaria mais uma tag para a mesma árvore.
+      - name: Pula um commit que já tem tag de release
+        id: check
+        run: |
+          existing="$(git tag --points-at HEAD \
+            | grep -E '^20[0-9]{2}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?$' || true)"
+          if [ -n "$existing" ]; then
+            echo "::notice::commit já publicado como $(printf '%s' "$existing" | tr '\n' ' ')"
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Cria e publica a tag
+        id: create
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # O script imprime a tag no stdout e os avisos no stderr.
+          tag="$(tools/release-tag.sh)"
+          git push origin "$tag"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "::notice::release $tag"
+
+  release:
+    name: Publica a release
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    # Chamado em vez de disparado: uma tag publicada com o GITHUB_TOKEN não
+    # dispara o `on: push: tags` do release.yml.
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    permissions:
+      contents: read
+      packages: write

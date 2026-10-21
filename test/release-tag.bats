@@ -118,11 +118,19 @@ tag_remota() {
 }
 
 # A tag é dado e vai para stdout; o resto é log e vai para stderr, igual ao
-# init container.
+# init container. É o que deixa `tag="$(tools/release-tag.sh)"` funcionar no
+# workflow que publica a tag.
 @test "--print escreve só a tag no stdout" {
   run bash -c "'$RELEASE_TAG' --print 2>/dev/null"
   [ "$status" -eq 0 ]
   [ "$output" = "2026-10-20" ]
+}
+
+@test "criar a tag também escreve só o nome dela no stdout" {
+  tag_local 2026-10-20
+  run bash -c "'$RELEASE_TAG' 2>/dev/null"
+  [ "$status" -eq 0 ]
+  [ "$output" = "2026-10-20.1" ]
 }
 
 @test "remoto inacessível vira aviso, não erro" {

@@ -115,8 +115,9 @@ main() {
   fi
   tag="$(release::next "$date" "$remote")"
 
-  # A tag é dado e vai para stdout, para que `$(tools/release-tag.sh --print)`
-  # funcione; o resto é log e vai para stderr.
+  # Nos dois modos a tag é dado e vai sozinha para stdout; o resto é log e vai
+  # para stderr. Assim `tag="$(tools/release-tag.sh)"` serve tanto para um
+  # script quanto para o workflow que publica a tag.
   if ((print_only)); then
     printf '%s\n' "$tag"
     return 0
@@ -129,6 +130,7 @@ main() {
   git tag -a "$tag" -m "Release $tag"
   printf 'tag %s criada em %s\n' "$tag" "$(git rev-parse --short HEAD)" >&2
   printf 'publique com: git push %s %s\n' "$remote" "$tag" >&2
+  printf '%s\n' "$tag"
 }
 
 main "$@"

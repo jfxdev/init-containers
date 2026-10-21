@@ -320,9 +320,15 @@ parte em `apiVersion` (`init-containers/v1`) e alterado só quando muda de forma
 incompatível.
 
 Mais de uma release no mesmo dia leva um sufixo sequencial — `2026-10-20.1`,
-`2026-10-20.2`. A primeira do dia vai sem sufixo, e o sufixo não é escolhido à
-mão: `make tag` olha as tags que já existem, local e no remoto, e usa a
-próxima da sequência.
+`2026-10-20.2`. A primeira do dia vai sem sufixo, e o sufixo nunca é escolhido
+à mão: as tags que já existem são consultadas local e no remoto, porque uma tag
+criada e ainda não publicada também ocupa o nome.
+
+O próximo sufixo vem do maior em uso, não da contagem: se a `.1` for apagada,
+depois da `.2` vem a `.3`. Uma tag já publicada nunca é reaproveitada para
+outro commit — quem já baixou aquela imagem continua com a dela.
+
+A data vem do **UTC**, para não depender do fuso de quem publica.
 
 | Tag           | Aponta para |
 | ------------- | ----------- |
@@ -336,7 +342,31 @@ Fixar o digest é mais forte ainda.
 A versão embutida na imagem é a própria tag, visível em `init-containers
 --version` e no campo `version` do log em nível `debug`.
 
-Para publicar:
+### Quando a release sai
+
+**Todo merge em `main` vira uma release.** O workflow `Tag de release` cria a
+tag do dia e chama o `Release`, que constrói e publica a imagem. No caminho
+comum não há passo manual nenhum.
+
+Um re-run do workflow sobre um commit que já tem tag de release não cria outra:
+a tag é do commit, não da execução.
+
+Uma tag publicada com o `GITHUB_TOKEN` não dispara outro workflow, então o
+`Tag de release` **chama** o `Release` em vez de esperar o evento de push da
+tag. As duas rotas — merge em `main` e tag publicada à mão — terminam no mesmo
+job de publicação.
+
+A tagueação é serializada (`concurrency`), senão dois merges seguidos
+calculariam o mesmo sufixo e o segundo push falharia.
+
+O `Release` roda a suíte bats dentro da imagem antes de publicar, então um
+commit quebrado não vira imagem publicada. A tag, porém, é criada antes: num
+build que falha ela fica apontando para um commit sem imagem, e o próximo merge
+segue a sequência normalmente.
+
+### Publicando à mão
+
+Para um commit que não veio de merge, ou uma release fora do fluxo:
 
 ```bash
 make next-tag   # mostra qual seria a tag de hoje, sem criar nada
@@ -345,16 +375,11 @@ git push origin 2026-10-20.1
 ```
 
 `make tag` cria a tag e para por aí: o push é o que dispara a release, e essa
-continua sendo uma decisão explícita. A data vem do **UTC**, para que duas
-pessoas em fusos diferentes cheguem na mesma.
+continua sendo uma decisão explícita. É o mesmo script que o CI usa, então o
+nome e o sufixo saem iguais dos dois lados.
 
-O próximo sufixo vem do maior em uso, não da contagem: se a `.1` for apagada,
-depois da `.2` vem a `.3`. Uma tag já publicada nunca é reaproveitada para
-outro commit — quem já baixou aquela imagem continua com a dela.
-
-O workflow `Release` recusa tags fora do formato e datas que não existem no
-calendário (`2026-02-30`), roda a suíte bats dentro da imagem e só então publica
-`linux/amd64` e `linux/arm64`.
+O `Release` recusa tags fora do formato e datas que não existem no calendário
+(`2026-02-30`), e publica `linux/amd64` e `linux/arm64`.
 
 ## Desenvolvimento
 
