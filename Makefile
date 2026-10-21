@@ -52,7 +52,7 @@ check: lint fmt-check test validate-examples ## Roda tudo que não exige docker
 
 .PHONY: tag
 tag: ## Cria a tag de release do dia (sufixo .N automático se já existir)
-	tools/release-tag.sh
+	@tools/release-tag.sh
 
 .PHONY: next-tag
 next-tag: ## Mostra a tag que o próximo release do dia usaria, sem criar nada

@@ -8,9 +8,15 @@ on:
 
 # Uma tagueação por vez: dois merges em sequência calculariam o mesmo sufixo, e
 # o segundo push falharia com a tag já existente.
+#
+# queue: max porque o padrão guarda uma execução pendente só — com três merges
+# seguidos, a do meio seria cancelada e aquele merge ficaria sem release. O
+# grupo tem nome próprio, diferente do usado no release.yml: repetir o nome
+# entre workflow chamador e chamado é justamente o que trava os dois.
 concurrency:
   group: release-tag
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read

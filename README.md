@@ -357,7 +357,15 @@ tag. As duas rotas — merge em `main` e tag publicada à mão — terminam no m
 job de publicação.
 
 A tagueação é serializada (`concurrency`), senão dois merges seguidos
-calculariam o mesmo sufixo e o segundo push falharia.
+calculariam o mesmo sufixo e o segundo push falharia. A fila usa `queue: max`
+porque o padrão do GitHub guarda uma execução pendente só: com três merges em
+sequência, a do meio seria cancelada e aquele merge ficaria sem release.
+
+A publicação também é serializada, num grupo separado, porque uma tag publicada
+à mão e um merge podem coincidir — e dois builds em paralelo deixariam o
+`latest` com o que terminasse por último, não com a release mais nova. Pela
+mesma razão, `latest` só anda para frente: republicar uma tag antiga atualiza a
+tag datada dela e deixa o `latest` onde está.
 
 O `Release` roda a suíte bats dentro da imagem antes de publicar, então um
 commit quebrado não vira imagem publicada. A tag, porém, é criada antes: num
@@ -369,14 +377,18 @@ segue a sequência normalmente.
 Para um commit que não veio de merge, ou uma release fora do fluxo:
 
 ```bash
-make next-tag   # mostra qual seria a tag de hoje, sem criar nada
-make tag        # cria a tag anotada do dia, com o sufixo certo
-git push origin 2026-10-20.1
+make next-tag             # mostra qual seria a tag de hoje, sem criar nada
+tag="$(make tag)"         # cria a tag anotada do dia e devolve o nome dela
+git push origin "$tag"
 ```
 
-`make tag` cria a tag e para por aí: o push é o que dispara a release, e essa
-continua sendo uma decisão explícita. É o mesmo script que o CI usa, então o
-nome e o sufixo saem iguais dos dois lados.
+`make tag` imprime no stdout só a tag que criou, então dá para encadear sem
+adivinhar o sufixo — a primeira release do dia é `2026-10-20`, a segunda
+`2026-10-20.1`.
+
+Ele cria a tag e para por aí: o push é o que dispara a release, e essa continua
+sendo uma decisão explícita. É o mesmo script que o CI usa, então o nome e o
+sufixo saem iguais dos dois lados.
 
 O `Release` recusa tags fora do formato e datas que não existem no calendário
 (`2026-02-30`), e publica `linux/amd64` e `linux/arm64`.

@@ -149,10 +149,50 @@ tag_remota() {
   [ "$(git rev-list -n1 2026-10-20)" = "$(git rev-parse HEAD)" ]
 }
 
-@test "data inválida falha com mensagem clara" {
+@test "data sem formato de data falha com mensagem clara" {
   INITC_RELEASE_DATE=ontem run "$RELEASE_TAG" --print
   [ "$status" -eq 1 ]
-  helper::assert_contains "$output" "INITC_RELEASE_DATE inválida"
+  helper::assert_contains "$output" "data de release inválida"
+}
+
+# A validação é a mesma do workflow: criar aqui uma tag que o release recusaria
+# depois do push só adiaria o erro.
+@test "dia que não existe no mês é recusado" {
+  INITC_RELEASE_DATE=2026-02-30 run "$RELEASE_TAG" --print
+  [ "$status" -eq 1 ]
+  helper::assert_contains "$output" "data de release inválida"
+}
+
+@test "29 de fevereiro passa em ano bissexto e falha fora dele" {
+  INITC_RELEASE_DATE=2024-02-29 run "$RELEASE_TAG" --print
+  [ "$status" -eq 0 ]
+  [ "$output" = "2024-02-29" ]
+
+  INITC_RELEASE_DATE=2026-02-29 run "$RELEASE_TAG" --print
+  [ "$status" -eq 1 ]
+}
+
+@test "mês e dia fora do intervalo são recusados" {
+  INITC_RELEASE_DATE=2026-13-01 run "$RELEASE_TAG" --print
+  [ "$status" -eq 1 ]
+
+  INITC_RELEASE_DATE=2026-10-32 run "$RELEASE_TAG" --print
+  [ "$status" -eq 1 ]
+}
+
+# O workflow só dispara em tags 20xx; um ano fora disso viraria uma tag que
+# nunca publicaria nada.
+@test "ano fora do século é recusado" {
+  INITC_RELEASE_DATE=1999-10-20 run "$RELEASE_TAG" --print
+  [ "$status" -eq 1 ]
+}
+
+@test "último dia de cada mês é aceito" {
+  for d in 2026-01-31 2026-04-30 2026-06-30 2026-09-30 2026-12-31; do
+    INITC_RELEASE_DATE="$d" run "$RELEASE_TAG" --print
+    [ "$status" -eq 0 ]
+    [ "$output" = "$d" ]
+  done
 }
 
 @test "opção desconhecida falha com exit 1" {

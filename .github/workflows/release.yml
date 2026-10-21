@@ -28,6 +28,17 @@ jobs:
   image:
     name: Publica a imagem
     runs-on: ubuntu-latest
+    # As duas rotas publicam `latest`. Sem isto, uma tag publicada à mão e um
+    # merge podem construir em paralelo, e o build que terminar por último fica
+    # com o `latest` — não necessariamente o da release mais nova.
+    #
+    # O grupo é só deste job e tem nome diferente do grupo do tag.yml: um grupo
+    # compartilhado entre o workflow chamador e o chamado faria um esperar pelo
+    # outro.
+    concurrency:
+      group: publish-image
+      cancel-in-progress: false
+      queue: max
     env:
       # Pelo evento de push a tag é a própria ref; pelo workflow_call vem de
       # quem chamou, porque ali a ref é a de main.
@@ -58,7 +69,24 @@ jobs:
           # A imagem sai do commit que a tag aponta, não do topo de main: pelo
           # workflow_call o repositório pode já ter andado.
           ref: ${{ env.TAG }}
+          # Traz as tags, que o passo seguinte compara.
+          fetch-depth: 0
           persist-credentials: false
+
+      # A serialização impede dois builds ao mesmo tempo, mas não impede
+      # republicar uma tag antiga — um re-run de release velha, por exemplo.
+      # Sem esta checagem, o `latest` andaria para trás.
+      - name: Decide se esta release move o latest
+        id: latest
+        run: |
+          newest="$(git tag --list \
+            | grep -E '^20[0-9]{2}-[0-9]{2}-[0-9]{2}(\.[0-9]+)?$' \
+            | sort -V | tail -1)"
+          if [ "$newest" = "$TAG" ]; then
+            echo "move=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::$TAG não é a release mais recente ($newest); latest fica onde está"
+          fi
 
       # Confirma que a imagem passa nos próprios testes antes de publicar.
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -91,7 +119,7 @@ jobs:
           # evento é um push em main, e a ref seria "main".
           tags: |
             type=raw,value=${{ env.TAG }}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ steps.latest.outputs.move == 'true' }}
 
       - name: Build e push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

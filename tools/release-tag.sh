@@ -24,6 +24,25 @@ Variáveis:
 EOF
 }
 
+# release::is_calendar_date <AAAA-MM-DD>
+#
+# O formato sozinho aceita 2026-02-30: quantos dias um mês tem depende do mês.
+# Em bash em vez de `date -d`, que não é portátil — a suíte também roda dentro
+# da imagem, contra o busybox.
+release::is_calendar_date() {
+  local year month day
+  year=$((10#${1:0:4}))
+  month=$((10#${1:5:2}))
+  day=$((10#${1:8:2}))
+
+  local -a days_in_month=(31 28 31 30 31 30 31 31 30 31 30 31)
+  if ((month == 2)) && ((year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))); then
+    ((day <= 29))
+  else
+    ((day <= days_in_month[month - 1]))
+  fi
+}
+
 # release::existing <data> <remoto>
 #
 # As tags do dia que já existem, locais e no remoto: uma tag local ainda não
@@ -109,8 +128,11 @@ main() {
   # INITC_RELEASE_DATE existe para os testes e para datar uma release à mão.
   local date tag
   date="${INITC_RELEASE_DATE:-$(date -u +%Y-%m-%d)}"
-  if [[ ! "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-    printf 'erro: INITC_RELEASE_DATE inválida: %s (esperado AAAA-MM-DD)\n' "$date" >&2
+  # O mesmo formato que o workflow de release exige. Validar aqui evita criar
+  # uma tag que só seria recusada lá, depois do push.
+  if [[ ! "$date" =~ ^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$ ]] ||
+    ! release::is_calendar_date "$date"; then
+    printf 'erro: data de release inválida: %s (esperado AAAA-MM-DD existente)\n' "$date" >&2
     return 1
   fi
   tag="$(release::next "$date" "$remote")"
