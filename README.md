@@ -320,7 +320,9 @@ parte em `apiVersion` (`init-containers/v1`) e alterado só quando muda de forma
 incompatível.
 
 Mais de uma release no mesmo dia leva um sufixo sequencial — `2026-10-20.1`,
-`2026-10-20.2`. A primeira do dia vai sem sufixo.
+`2026-10-20.2`. A primeira do dia vai sem sufixo, e o sufixo não é escolhido à
+mão: `make tag` olha as tags que já existem, local e no remoto, e usa a
+próxima da sequência.
 
 | Tag           | Aponta para |
 | ------------- | ----------- |
@@ -337,9 +339,18 @@ A versão embutida na imagem é a própria tag, visível em `init-containers
 Para publicar:
 
 ```bash
-git tag 2026-10-20
-git push origin 2026-10-20
+make next-tag   # mostra qual seria a tag de hoje, sem criar nada
+make tag        # cria a tag anotada do dia, com o sufixo certo
+git push origin 2026-10-20.1
 ```
+
+`make tag` cria a tag e para por aí: o push é o que dispara a release, e essa
+continua sendo uma decisão explícita. A data vem do **UTC**, para que duas
+pessoas em fusos diferentes cheguem na mesma.
+
+O próximo sufixo vem do maior em uso, não da contagem: se a `.1` for apagada,
+depois da `.2` vem a `.3`. Uma tag já publicada nunca é reaproveitada para
+outro commit — quem já baixou aquela imagem continua com a dela.
 
 O workflow `Release` recusa tags fora do formato e datas que não existem no
 calendário (`2026-02-30`), roda a suíte bats dentro da imagem e só então publica
@@ -375,6 +386,7 @@ lib/clone.sh          clone, re-sync e credenciais
 lib/perms.sh          chown e chmod
 lib/log.sh            logging em texto ou JSON
 lib/run.sh            execução de comandos, com suporte a dry-run
+tools/release-tag.sh  cria a tag de release do dia (fora da imagem)
 ```
 
 A configuração é validada e depois normalizada para uma forma em que todo campo

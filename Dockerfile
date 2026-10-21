@@ -28,6 +28,9 @@ FROM runtime AS test
 RUN apk add --no-cache bats
 COPY test/ test/
 COPY examples/ examples/
+# Ferramentas de desenvolvimento: ficam só no estágio de teste, porque a suíte
+# cobre tools/release-tag.sh e nada disso roda dentro do init container.
+COPY tools/ tools/
 RUN git config --global user.email ci@example.com \
  && git config --global user.name CI \
  && bats test/
